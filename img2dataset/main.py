@@ -98,6 +98,7 @@ def download(
     compute_hash: Optional[str] = "sha256",
     verify_hash: Optional[List[str]] = None,
     distributor: str = "multiprocessing",
+    tor: bool = False,
     subjob_size: int = 1000,
     retries: int = 0,
     disable_all_reencoding: bool = False,
@@ -241,6 +242,7 @@ def download(
         user_agent_token=user_agent_token,
         disallowed_header_directives=disallowed_header_directives,
         blurring_bbox_col=bbox_col,
+        tor=tor,
     )
 
     print("Starting the downloading of this file")

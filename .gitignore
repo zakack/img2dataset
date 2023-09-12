@@ -14,3 +14,4 @@ wandb
 .pexing
 build
 .hypothesis
+venv

@@ -3,6 +3,11 @@
 from multiprocessing.pool import ThreadPool
 from threading import Semaphore
 import urllib.request
+from stem.control import Controller
+from stem import Signal
+import stem.process
+import socks
+import socket
 import io
 import math
 import exifread
@@ -42,7 +47,7 @@ def download_image(row, timeout, user_agent_token, disallowed_header_directives)
     if user_agent_token:
         user_agent_string += f" (compatible; {user_agent_token}; +https://github.com/rom1504/img2dataset)"
     try:
-        request = urllib.request.Request(url, data=None, headers={"User-Agent": user_agent_string})
+        request = urllib.request.Request(url, data=None, headers={"User-Agent": user_agent_string}, unverifiable=True)
         with urllib.request.urlopen(request, timeout=timeout) as r:
             if disallowed_header_directives and is_disallowed(
                 r.headers,
@@ -74,6 +79,29 @@ def compute_key(key, shard_id, oom_sample_per_shard, oom_shard_count):
     )
     return str_key
 
+class TorProcess:
+    """The TorProcess class handles the tor process"""
+
+    def __init__(self):
+        self.tor_process = stem.process.launch_tor_with_config(
+            config={
+                "SocksPort": "0",
+                "ControlPort": "0",
+            },
+            init_msg_handler=None
+        )
+        self.config = self.tor_process.get_config()
+        self.controller = Controller.from_port(port=self.config["ControlPort"])
+        self.controller.authenticate()
+
+    def __del__(self):
+        self.controller.close()
+        self.tor_process.kill()
+
+    def new_circuit(self):
+        """Get a new circuit"""
+        time.sleep(self.controller.get_newnym_wait())
+        self.controller.signal(Signal.NEWNYM)
 
 class Downloader:
     """The downloader class gets calls with shards, download them then call the writer to write them down"""
@@ -96,6 +124,7 @@ class Downloader:
         retries,
         user_agent_token,
         disallowed_header_directives,
+        tor,
         blurring_bbox_col=None,
     ) -> None:
         self.sample_writer_class = sample_writer_class
@@ -112,6 +141,7 @@ class Downloader:
         self.verify_hash_type = verify_hash_type
         self.encode_format = encode_format
         self.retries = retries
+        self.tor = tor
         self.user_agent_token = None if user_agent_token is None else user_agent_token.strip().lower()
         self.disallowed_header_directives = (
             None
@@ -189,6 +219,14 @@ class Downloader:
                 yield e
 
         loader = data_generator()
+
+        tor = None
+        # start tor instance
+        if self.tor:
+            tor = TorProcess()
+            tor.new_circuit()
+            socks.setdefaultproxy(socks.PROXY_TYPE_SOCKS5, '127.0.0.1', self.tor.config['SocksPort'])
+            socket.socket = socks.socksocket
 
         # give schema to writer
         sample_writer = self.sample_writer_class(
@@ -336,11 +374,13 @@ class Downloader:
                     print(f"Sample {key} failed to download: {err}")
                 semaphore.release()
 
+
             sample_writer.close()
             thread_pool.terminate()
             thread_pool.join()
             del thread_pool
 
+        del tor
         end_time = time.time()
         write_stats(
             self.output_folder,
